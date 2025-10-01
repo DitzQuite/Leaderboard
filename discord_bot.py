@@ -9,7 +9,7 @@ from voidsdatastore import get_value, update_value
 # GUILD for slash command registration
 GUILD_ID = 1411904165814206516
 
-intents = discord.Intents.default()
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------- Datastore Helpers ---------------- #
