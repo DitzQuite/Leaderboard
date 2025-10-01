@@ -157,6 +157,7 @@ async def set_score(interaction: discord.Interaction, lb_name: str, member: disc
 async def leaderboard(interaction: discord.Interaction, lb_name: str):
     await interaction.response.defer()
     data = load_leaderboard(interaction.guild_id, lb_name)
+    print(data)
     if not data:
         await interaction.followup.send("⚠️ Leaderboard not found.", ephemeral=True)
         return
