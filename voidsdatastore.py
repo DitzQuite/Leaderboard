@@ -82,6 +82,7 @@ class DatastoreClient:
             except requests.RequestException as e:
                 raise DatastoreError(f"Network error during polling: {e}") from e
 
+            print(resp.text)
             # Check for a successful response (200 OK)
             if resp.status_code == 200:
                 try:
