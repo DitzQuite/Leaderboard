@@ -1,16 +1,13 @@
 """
-Voids Datastore Python Client Library
+Voids Datastore Python Client Library (Simplified Polling)
 
 Supports:
-- Get key values from datastore (with async polling until ready).
-- Update key values (with async polling until complete).
+- Get key values from datastore.
+- Update key values.
 - Uses environment variables VOIDS_DATASTORE_API_KEY or API_KEY if no key provided.
 - Default base_url = https://voidsdatastore.net/api/v1/
 
-Polling is designed to respect rate limits:
-- Default poll interval = 5s
-- Exponential backoff up to 30s if "pending" repeats
-- Honors Retry-After header if present
+Polling includes a short delay (default 5s) to prevent spam requests.
 """
 
 from __future__ import annotations
@@ -33,16 +30,12 @@ class AuthenticationError(DatastoreError):
     """Raised when API key is missing or invalid."""
 
 
-class PollTimeoutError(DatastoreError):
-    """Raised when polling timed out before data was ready."""
-
-
 # -----------------------------
 # Constants
 # -----------------------------
 DEFAULT_BASE_URL = "https://voidsdatastore.net/api/v1/"
-DEFAULT_POLL_INTERVAL = 5.0
-MAX_BACKOFF_INTERVAL = 30.0
+# Minimum poll interval to prevent accidental spam requests
+MIN_POLL_INTERVAL = 5.0
 
 
 # -----------------------------
@@ -76,59 +69,43 @@ class DatastoreClient:
     def _poll_status(
         self,
         request_id: str,
-        poll_interval: float = DEFAULT_POLL_INTERVAL,
-        poll_timeout: float = 60.0,
     ) -> Any:
         """
-        Poll /status/{request_id} until the data is ready or timeout.
-        Uses exponential backoff if still pending.
+        Poll /status/{request_id} repeatedly until data is ready.
+        Includes a MIN_POLL_INTERVAL delay to prevent spam.
         """
         url = self._build_url(f"status/{request_id}")
-        deadline = time.monotonic() + float(poll_timeout)
-        interval = poll_interval
 
         while True:
-            if time.monotonic() > deadline:
-                raise PollTimeoutError(f"Polling for request {request_id} timed out after {poll_timeout}s")
-
             try:
                 resp = self._session.get(url, timeout=self.request_timeout)
             except requests.RequestException as e:
                 raise DatastoreError(f"Network error during polling: {e}") from e
 
-            # Always expect 200 with JSON
-            try:
-                data = resp.json()
-            except Exception:
-                raise DatastoreError(f"Status endpoint returned non-JSON: {resp.text}")
+            # Check for a successful response (200 OK)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {"status": "error", "message": resp.text}
 
-            # If still pending, wait and retry
-            if isinstance(data, dict) and data.get("status") == "pending":
-                # Honor Retry-After if present
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after:
-                    try:
-                        wait_time = float(retry_after)
-                    except ValueError:
-                        wait_time = interval
-                else:
-                    wait_time = interval
+                # Check if the status is still 'pending'
+                if isinstance(data, dict) and data.get("status") == "pending":
+                    # Critical: Wait for a short time to prevent spam requests
+                    print(f"Request {request_id} pending. Waiting {MIN_POLL_INTERVAL}s...")
+                    time.sleep(MIN_POLL_INTERVAL)
+                    continue  # Poll again
 
-                time.sleep(wait_time)
+                # If not pending, return the result
+                return data
 
-                # Exponential backoff up to max
-                interval = min(interval * 2, MAX_BACKOFF_INTERVAL)
-                continue
-
-            # Otherwise return the data
-            return data
+            # Handle unexpected status codes
+            raise DatastoreError(f"Unexpected status {resp.status_code} during polling: {resp.text}")
 
     def get_key(
         self,
         game_id: str,
         key: str,
-        poll_interval: float = DEFAULT_POLL_INTERVAL,
-        poll_timeout: float = 60.0,
     ) -> Any:
         """
         Get a key value from the datastore.
@@ -155,7 +132,8 @@ class DatastoreClient:
             if not request_id:
                 raise DatastoreError("202 response missing 'requestId' field")
 
-            return self._poll_status(request_id, poll_interval, poll_timeout)
+            # Start polling
+            return self._poll_status(request_id)
 
         raise DatastoreError(f"Unexpected status {resp.status_code}: {resp.text}")
 
@@ -164,8 +142,6 @@ class DatastoreClient:
         game_id: str,
         key: str,
         value: Union[Dict[str, Any], str, int, float, list, None],
-        poll_interval: float = DEFAULT_POLL_INTERVAL,
-        poll_timeout: float = 60.0,
     ) -> Any:
         """
         Update a key value in the datastore.
@@ -208,7 +184,8 @@ class DatastoreClient:
             if not request_id:
                 raise DatastoreError("202 response missing 'requestId' field")
 
-            return self._poll_status(request_id, poll_interval, poll_timeout)
+            # Start polling
+            return self._poll_status(request_id)
 
         raise DatastoreError(f"Unexpected status {resp.status_code}: {resp.text}")
 
@@ -221,11 +198,10 @@ def get_value(
     key: str,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
-    poll_interval: float = DEFAULT_POLL_INTERVAL,
-    poll_timeout: float = 60.0,
 ) -> Any:
+    """Convenience function to get a value using a short-lived client."""
     client = DatastoreClient(api_key=api_key, base_url=base_url)
-    return client.get_key(game_id, key, poll_interval, poll_timeout)
+    return client.get_key(game_id, key)
 
 
 def update_value(
@@ -234,44 +210,7 @@ def update_value(
     value: Union[Dict[str, Any], str, int, float, list, None],
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
-    poll_interval: float = DEFAULT_POLL_INTERVAL,
-    poll_timeout: float = 60.0,
 ) -> Any:
+    """Convenience function to update a value using a short-lived client."""
     client = DatastoreClient(api_key=api_key, base_url=base_url)
-    return client.update_key(game_id, key, value, poll_interval, poll_timeout)
-
-
-# -----------------------------
-# Example CLI
-# -----------------------------
-if __name__ == "__main__":
-    import argparse, json
-
-    parser = argparse.ArgumentParser(description="Voids Datastore CLI")
-    parser.add_argument("--api-key", help="API key (default: env VOIDS_DATASTORE_API_KEY or API_KEY)", default=None)
-    parser.add_argument("--base-url", help="Custom API base URL", default=None)
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    g = sub.add_parser("get", help="Get a key value")
-    g.add_argument("game_id")
-    g.add_argument("key")
-
-    u = sub.add_parser("set", help="Set a key value")
-    u.add_argument("game_id")
-    u.add_argument("key")
-    u.add_argument("value")
-
-    args = parser.parse_args()
-    try:
-        if args.cmd == "get":
-            res = get_value(args.game_id, args.key, api_key=args.api_key, base_url=args.base_url)
-            print(json.dumps(res, indent=2) if isinstance(res, (dict, list)) else res)
-        elif args.cmd == "set":
-            try:
-                val = json.loads(args.value)
-            except Exception:
-                val = args.value
-            res = update_value(args.game_id, args.key, val, api_key=args.api_key, base_url=args.base_url)
-            print(json.dumps(res, indent=2) if isinstance(res, (dict, list)) else res)
-    except DatastoreError as e:
-        print(f"Error: {e}")
+    return client.update_key(game_id, key, value)
