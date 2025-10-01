@@ -128,10 +128,10 @@ async def set_score(interaction: discord.Interaction, lb_name: str, member: disc
         await interaction.response.send_message("⚠️ Leaderboard not found.", ephemeral=True)
         return
 
-    # Use member ID as the key
     data["scores"][str(member.id)] = score
     save_leaderboard(interaction.guild_id, lb_name, data)
-    await interaction.response.send_message(f"✅ Set {member.mention}'s score to {score} on **{lb_name}**.")
+
+    await interaction.response.send_message(f"✅ Set {member.mention}'s score to {score} on **{lb_name}**")
 
 # View leaderboard
 @bot.tree.command(name="leaderboard", description="View a leaderboard", guild=discord.Object(id=GUILD_ID))
