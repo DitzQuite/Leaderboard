@@ -26,6 +26,10 @@ def load_leaderboard(guild_id: int, lb_name: str) -> Dict[str, Any] | None:
 def save_leaderboard(guild_id: int, lb_name: str, data: Dict[str, Any]) -> None:
     update_value(str(guild_id), _lb_key(lb_name), data)
 
+def delete_leaderboard(guild_id: int, lb_name: str) -> None:
+    # Remove leaderboard key
+    update_value(str(guild_id), _lb_key(lb_name), None)
+
 def list_leaderboards(guild_id: int) -> List[str]:
     try:
         data = get_value(str(guild_id), "leaderboards_index")
@@ -39,6 +43,12 @@ def add_leaderboard_to_index(guild_id: int, lb_name: str):
     lbs = list_leaderboards(guild_id)
     if lb_name not in lbs:
         lbs.append(lb_name)
+        update_value(str(guild_id), "leaderboards_index", lbs)
+
+def remove_leaderboard_from_index(guild_id: int, lb_name: str):
+    lbs = list_leaderboards(guild_id)
+    if lb_name in lbs:
+        lbs.remove(lb_name)
         update_value(str(guild_id), "leaderboards_index", lbs)
 
 # ---------------- Formatting ---------------- #
@@ -87,20 +97,23 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Sync error: {e}")
 
+# ---------------- Commands ---------------- #
+
 # Create leaderboard
 @bot.tree.command(name="create_lb", description="Create a leaderboard", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(name="Leaderboard name", position="Prefix or suffix", symbol="Optional symbol (max 7 chars)")
 async def create_lb(interaction: discord.Interaction, name: str, position: str = "prefix", symbol: str = ""):
+    await interaction.response.defer()
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("⚠️ Admins only.", ephemeral=True)
+        await interaction.followup.send("⚠️ Admins only.", ephemeral=True)
         return
 
     if len(symbol) > 7:
-        await interaction.response.send_message("⚠️ Prefix/suffix cannot exceed 7 characters.", ephemeral=True)
+        await interaction.followup.send("⚠️ Prefix/suffix cannot exceed 7 characters.", ephemeral=True)
         return
 
     if load_leaderboard(interaction.guild_id, name):
-        await interaction.response.send_message("⚠️ Leaderboard already exists.", ephemeral=True)
+        await interaction.followup.send("⚠️ Leaderboard already exists.", ephemeral=True)
         return
 
     data = {"prefix": "", "suffix": "", "scores": {}}
@@ -113,44 +126,46 @@ async def create_lb(interaction: discord.Interaction, name: str, position: str =
     save_leaderboard(interaction.guild_id, name, data)
     add_leaderboard_to_index(interaction.guild_id, name)
 
-    await interaction.response.send_message(f"✅ Created leaderboard **{name}**")
+    await interaction.followup.send(f"✅ Created leaderboard **{name}**")
 
 # Set or update score
 @bot.tree.command(name="set_score", description="Set a member's score", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(lb_name="Leaderboard name", member="Member to update", score="Score value")
 async def set_score(interaction: discord.Interaction, lb_name: str, member: discord.Member, score: int):
+    await interaction.response.defer()
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("⚠️ Admins only.", ephemeral=True)
+        await interaction.followup.send("⚠️ Admins only.", ephemeral=True)
         return
 
     data = load_leaderboard(interaction.guild_id, lb_name)
     if not data:
-        await interaction.response.send_message("⚠️ Leaderboard not found.", ephemeral=True)
+        await interaction.followup.send("⚠️ Leaderboard not found.", ephemeral=True)
         return
 
     data["scores"][str(member.id)] = score
     save_leaderboard(interaction.guild_id, lb_name, data)
-
-    await interaction.response.send_message(f"✅ Set {member.mention}'s score to {score} on **{lb_name}**")
+    await interaction.followup.send(f"✅ Set {member.mention}'s score to {score} on **{lb_name}**")
 
 # View leaderboard
 @bot.tree.command(name="leaderboard", description="View a leaderboard", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(lb_name="Leaderboard name")
 async def leaderboard(interaction: discord.Interaction, lb_name: str):
+    await interaction.response.defer()
     data = load_leaderboard(interaction.guild_id, lb_name)
     if not data:
-        await interaction.response.send_message("⚠️ Leaderboard not found.", ephemeral=True)
+        await interaction.followup.send("⚠️ Leaderboard not found.", ephemeral=True)
         return
 
     embed = format_leaderboard(lb_name, data)
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 # List leaderboards
 @bot.tree.command(name="list_lbs", description="List all leaderboards", guild=discord.Object(id=GUILD_ID))
 async def list_lbs(interaction: discord.Interaction):
+    await interaction.response.defer()
     lbs = list_leaderboards(interaction.guild_id)
     if not lbs:
-        await interaction.response.send_message("⚠️ No leaderboards available.")
+        await interaction.followup.send("⚠️ No leaderboards available.")
         return
 
     embed = discord.Embed(
@@ -158,7 +173,25 @@ async def list_lbs(interaction: discord.Interaction):
         description="\n".join([f"• {lb}" for lb in lbs]),
         color=discord.Color.blue()
     )
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
+
+# Delete leaderboard
+@bot.tree.command(name="delete_lb", description="Delete a leaderboard", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(lb_name="Leaderboard name")
+async def delete_lb(interaction: discord.Interaction, lb_name: str):
+    await interaction.response.defer()
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.followup.send("⚠️ Admins only.", ephemeral=True)
+        return
+
+    data = load_leaderboard(interaction.guild_id, lb_name)
+    if not data:
+        await interaction.followup.send("⚠️ Leaderboard not found.", ephemeral=True)
+        return
+
+    delete_leaderboard(interaction.guild_id, lb_name)
+    remove_leaderboard_from_index(interaction.guild_id, lb_name)
+    await interaction.followup.send(f"✅ Deleted leaderboard **{lb_name}**")
 
 # ---------------- Run ---------------- #
 
