@@ -1,64 +1,169 @@
-import logging
-import os
 import discord
-import asyncio
+from discord import app_commands
+from discord.ext import commands
+import os
+from typing import Dict, Any, List
 
+from voidsdatastore import get_value, update_value
+
+# GUILD for slash command registration
+GUILD_ID = 1411904165814206516
 
 intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Set up logging for the bot
-logging.basicConfig(level=logging.INFO)
+# ---------------- Datastore Helpers ---------------- #
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+def _lb_key(lb_name: str) -> str:
+    return f"leaderboard:{lb_name}"
 
-# If token is missing, exit
-if not TOKEN:
-    logging.error(f"Missing required token")
-    exit(1)
+def load_leaderboard(guild_id: int, lb_name: str) -> Dict[str, Any] | None:
+    try:
+        return get_value(str(guild_id), _lb_key(lb_name))
+    except Exception:
+        return None
 
-# Background worker function
-async def background_worker():
-    while True:
-        logging.info("Background worker is running")
-        await asyncio.sleep(30)
+def save_leaderboard(guild_id: int, lb_name: str, data: Dict[str, Any]) -> None:
+    update_value(str(guild_id), _lb_key(lb_name), data)
 
+def list_leaderboards(guild_id: int) -> List[str]:
+    try:
+        data = get_value(str(guild_id), "leaderboards_index")
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception:
+        return []
 
-# Event when the bot is ready
-@client.event
+def add_leaderboard_to_index(guild_id: int, lb_name: str):
+    lbs = list_leaderboards(guild_id)
+    if lb_name not in lbs:
+        lbs.append(lb_name)
+        update_value(str(guild_id), "leaderboards_index", lbs)
+
+# ---------------- Formatting ---------------- #
+
+def format_leaderboard(name: str, data: dict):
+    scores = sorted(data["scores"].items(), key=lambda x: x[1], reverse=True)
+    prefix = data.get("prefix", "")
+    suffix = data.get("suffix", "")
+
+    embed = discord.Embed(
+        title=f"🏆 Leaderboard: {name}",
+        color=discord.Color.gold()
+    )
+
+    if not scores:
+        embed.description = "No entries yet!"
+        return embed
+
+    places = ["🥇 1st", "🥈 2nd", "🥉 3rd"]
+    for idx, (user_id, score) in enumerate(scores[:10]):
+        try:
+            user_display = f"<@{int(user_id)}>"
+        except Exception:
+            user_display = str(user_id)
+
+        if idx < 3:
+            place = places[idx]
+        else:
+            place = f"{idx+1}."
+        embed.add_field(
+            name=place,
+            value=f"{prefix}{score}{suffix} — {user_display}",
+            inline=False
+        )
+
+    return embed
+
+# ---------------- Slash Commands ---------------- #
+
+@bot.event
 async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
     try:
-        logging.info(f"We have logged in as {client.user}")
-        client.loop.create_task(background_worker())
-        logging.info("Started background worker task")
+        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"✅ Synced {len(synced)} commands for guild {GUILD_ID}")
     except Exception as e:
-        logging.error(f"Error while trying to start background worker: {e}")
+        print(f"❌ Sync error: {e}")
 
+# Create leaderboard
+@bot.tree.command(name="create_lb", description="Create a leaderboard", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(name="Leaderboard name", position="Prefix or suffix", symbol="Optional symbol (max 7 chars)")
+async def create_lb(interaction: discord.Interaction, name: str, position: str = "prefix", symbol: str = ""):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⚠️ Admins only.", ephemeral=True)
+        return
 
-# Event when a message is received by the bot
-@client.event
-async def on_message(message):
-    try:
-        if message.author == client.user:
-            return
-    
-        if message.content.lower() == 'hello':
-            await message.channel.send(f"Hello {message.author.global_name}!")
-            return
-    
-        elif message.content.lower() == 'bye':
-            await message.channel.send(f"Goodbye {message.author.global_name}!")
-            return
-    
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        await message.channel.send(f"An error occurred while trying to process your request. Please try again later.")
+    if len(symbol) > 7:
+        await interaction.response.send_message("⚠️ Prefix/suffix cannot exceed 7 characters.", ephemeral=True)
+        return
 
+    if load_leaderboard(interaction.guild_id, name):
+        await interaction.response.send_message("⚠️ Leaderboard already exists.", ephemeral=True)
+        return
 
-# Start the bot with a token
-if __name__ == '__main__':
-    try:
-        client.run(TOKEN)
-    except Exception as e:
-        logging.error(f"Error while trying to start the bot: {e}")
+    data = {"prefix": "", "suffix": "", "scores": {}}
+    if symbol:
+        if position.lower() == "prefix":
+            data["prefix"] = symbol
+        elif position.lower() == "suffix":
+            data["suffix"] = symbol
+
+    save_leaderboard(interaction.guild_id, name, data)
+    add_leaderboard_to_index(interaction.guild_id, name)
+
+    await interaction.response.send_message(f"✅ Created leaderboard **{name}**")
+
+# Set or update score
+@bot.tree.command(name="set_score", description="Set a member's score", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(lb_name="Leaderboard name", member="Member to update", score="Score value")
+async def set_score(interaction: discord.Interaction, lb_name: str, member: discord.Member, score: int):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⚠️ Admins only.", ephemeral=True)
+        return
+
+    data = load_leaderboard(interaction.guild_id, lb_name)
+    if not data:
+        await interaction.response.send_message("⚠️ Leaderboard not found.", ephemeral=True)
+        return
+
+    # Use member ID as the key
+    data["scores"][str(member.id)] = score
+    save_leaderboard(interaction.guild_id, lb_name, data)
+    await interaction.response.send_message(f"✅ Set {member.mention}'s score to {score} on **{lb_name}**.")
+
+# View leaderboard
+@bot.tree.command(name="leaderboard", description="View a leaderboard", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(lb_name="Leaderboard name")
+async def leaderboard(interaction: discord.Interaction, lb_name: str):
+    data = load_leaderboard(interaction.guild_id, lb_name)
+    if not data:
+        await interaction.response.send_message("⚠️ Leaderboard not found.", ephemeral=True)
+        return
+
+    embed = format_leaderboard(lb_name, data)
+    await interaction.response.send_message(embed=embed)
+
+# List leaderboards
+@bot.tree.command(name="list_lbs", description="List all leaderboards", guild=discord.Object(id=GUILD_ID))
+async def list_lbs(interaction: discord.Interaction):
+    lbs = list_leaderboards(interaction.guild_id)
+    if not lbs:
+        await interaction.response.send_message("⚠️ No leaderboards available.")
+        return
+
+    embed = discord.Embed(
+        title="📜 Available Leaderboards",
+        description="\n".join([f"• {lb}" for lb in lbs]),
+        color=discord.Color.blue()
+    )
+    await interaction.response.send_message(embed=embed)
+
+# ---------------- Run ---------------- #
+
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise RuntimeError("❌ DISCORD_TOKEN environment variable not set.")
+    bot.run(token)
