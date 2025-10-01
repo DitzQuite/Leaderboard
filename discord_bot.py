@@ -20,10 +20,10 @@ def _lb_key(lb_name: str) -> str:
 def load_leaderboard(guild_id: int, lb_name: str) -> Dict[str, Any] | None:
     try:
         val = get_value(str(guild_id), _lb_key(lb_name))
-        if "Type" in val["Message"] and val["Message"]["Type"] == "None":
-            return 
+        if "Type" in val["message"] and val["message"]["Type"] == "None":
+            return None
         else:
-            return val["Message"]
+            return val["message"]
     except Exception:
         return None
 
