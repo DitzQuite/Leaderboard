@@ -23,7 +23,7 @@ def load_leaderboard(guild_id: int, lb_name: str) -> Dict[str, Any] | None:
         if "Type" in val["Message"] and val["Message"]["Type"] == "None":
             return 
         else:
-            return val
+            return val["Message"]
     except Exception:
         return None
 
