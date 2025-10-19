@@ -81,11 +81,7 @@ async def on_member_join(member: discord.Member):
 async def datacheck(interaction: discord.Interaction):
     userdata = load_key(interaction.guild.id, str(interaction.user.id))
     if userdata is None:
-        userdata = {
-            "Balance": 0
-        }
-        save_key(interaction.guild.id, str(interaction.user.id), userdata)
-        return True
+        userdata = {}
     required = {
         "Balance": 0
     }
