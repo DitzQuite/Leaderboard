@@ -7,17 +7,16 @@ from typing import Dict, Any, List
 from voidsdatastore import get_value, update_value
 
 # GUILD for slash command registration
-GUILD_ID = 1411904165814206516
+GUILD_ID = 1429301285613600931
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ---------------- Datastore Helpers ---------------- #
-
 def _lb_key(lb_name: str) -> str:
     return f"leaderboard:{lb_name}"
 
-def load_leaderboard(guild_id: int, lb_name: str) -> Dict[str, Any] | None:
+
+def load_key(guild_id: int, lb_name: str) -> Dict[str, Any] | None:
     try:
         val = get_value(str(guild_id), _lb_key(lb_name))
         if "Type" in val["message"] and val["message"]["Type"] == "None":
@@ -27,70 +26,36 @@ def load_leaderboard(guild_id: int, lb_name: str) -> Dict[str, Any] | None:
     except Exception:
         return None
 
-def save_leaderboard(guild_id: int, lb_name: str, data: Dict[str, Any]) -> None:
+
+def save_key(guild_id: int, lb_name: str, data: Dict[str, Any]) -> None:
     update_value(str(guild_id), _lb_key(lb_name), data)
 
-def delete_leaderboard(guild_id: int, lb_name: str) -> None:
-    # Remove leaderboard key
+
+def delete_key(guild_id: int, lb_name: str) -> None:
     update_value(str(guild_id), _lb_key(lb_name), None)
 
-def list_leaderboards(guild_id: int) -> List[str]:
-    try:
-        data = get_value(str(guild_id), "leaderboards_index")
-        if isinstance(data, list):
-            return data
-        return []
-    except Exception:
-        return []
 
-def add_leaderboard_to_index(guild_id: int, lb_name: str):
-    lbs = list_leaderboards(guild_id)
-    if lb_name not in lbs:
-        lbs.append(lb_name)
-        update_value(str(guild_id), "leaderboards_index", lbs)
+def exchange_currency(from_user: discord.Member, to_user: discord.Member, amount: int, taxrate: float):
+    userdata = load_key(GUILD_ID, str(from_user.id))
+    userdata2 = load_key(GUILD_ID, str(to_user.id))
 
-def remove_leaderboard_from_index(guild_id: int, lb_name: str):
-    lbs = list_leaderboards(guild_id)
-    if lb_name in lbs:
-        lbs.remove(lb_name)
-        update_value(str(guild_id), "leaderboards_index", lbs)
+    taxed = round(amount*taxrate)
 
-# ---------------- Formatting ---------------- #
+    if userdata["Balance"] < amount:
+        return False
+    userdata["Balance"] -= amount
+    amount -= taxed
+    userdata2["Balance"] += amount
 
-def format_leaderboard(name: str, data: dict):
-    scores = sorted(data["scores"].items(), key=lambda x: x[1], reverse=True)
-    prefix = data.get("prefix", "")
-    suffix = data.get("suffix", "")
+    save_key(GUILD_ID, str(from_user.id), userdata)
+    save_key(GUILD_ID, str(to_user.id), userdata2)
 
-    embed = discord.Embed(
-        title=f"🏆 Leaderboard: {name}",
-        color=discord.Color.gold()
-    )
+    royalty = load_key(GUILD_ID, str(1105981751647539241))
+    royalty["Balance"] += taxed
 
-    if not scores:
-        embed.description = "No entries yet!"
-        return embed
+    save_key(GUILD_ID, str(1105981751647539241), royalty)
+    return True
 
-    places = ["🥇 1st", "🥈 2nd", "🥉 3rd"]
-    for idx, (user_id, score) in enumerate(scores[:10]):
-        try:
-            user_display = f"<@{int(user_id)}>"
-        except Exception:
-            user_display = str(user_id)
-
-        if idx < 3:
-            place = places[idx]
-        else:
-            place = f"{idx+1}."
-        embed.add_field(
-            name=place,
-            value=f"{prefix}{score}{suffix} — {user_display}",
-            inline=False
-        )
-
-    return embed
-
-# ---------------- Slash Commands ---------------- #
 
 @bot.event
 async def on_ready():
@@ -98,112 +63,101 @@ async def on_ready():
     try:
         synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
         print(f"✅ Synced {len(synced)} commands for guild {GUILD_ID}")
+        guild = bot.get_guild(GUILD_ID)
+        role = guild.get_role(1429329855815745537)
+        for user in guild.members:
+            if not user.bot and not role in user.roles:
+                await user.add_roles(role)
     except Exception as e:
         print(f"❌ Sync error: {e}")
 
-# ---------------- Commands ---------------- #
 
-# Create leaderboard
-@bot.tree.command(name="create_lb", description="Create a leaderboard", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(name="Leaderboard name", position="Prefix or suffix", symbol="Optional symbol (max 7 chars)")
-async def create_lb(interaction: discord.Interaction, name: str, position: str = "prefix", symbol: str = ""):
+@bot.event
+async def on_member_join(member: discord.Member):
+    guild = bot.get_guild(GUILD_ID)
+    role = guild.get_role(1429329855815745537)
+    await member.add_roles(role)
+
+async def datacheck(interaction: discord.Interaction):
+    userdata = load_key(interaction.guild.id, str(interaction.user.id))
+    if userdata is None:
+        userdata = {
+            "Balance": 0
+        }
+        save_key(interaction.guild.id, str(interaction.user.id), userdata)
+        return True
+    required = {
+        "Balance": 0
+    }
+    doit = False
+    for key, value in required.items():
+        if key not in userdata:
+            doit = True
+            userdata[key] = value
+
+    if doit:
+        save_key(interaction.guild.id, str(interaction.user.id), userdata)
+
+    return True
+
+
+@bot.tree.command(name="identity", description="Check yourself", guild=discord.Object(id=GUILD_ID))
+@app_commands.guild_install
+@app_commands.check(datacheck)
+async def balance(interaction: discord.Interaction):
     await interaction.response.defer()
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.followup.send("⚠️ Admins only.", ephemeral=True)
-        return
 
-    if len(symbol) > 7:
-        await interaction.followup.send("⚠️ Prefix/suffix cannot exceed 7 characters.", ephemeral=True)
-        return
+    userdata = load_key(interaction.guild.id, str(interaction.user.id))
 
-    if load_leaderboard(interaction.guild_id, name):
-        await interaction.followup.send("⚠️ Leaderboard already exists.", ephemeral=True)
-        return
+    embed = discord.Embed(title=f"{interaction.user.name}'s Identity", description="",color=discord.Color.green())
+    embed.set_author(name=f"{interaction.user.name}", icon_url=interaction.user.avatar.url)
+    embed.add_field(name="Bits", value=userdata["Balance"])
+    enforcement = [1429302329022349514,1429302169517031445,1429302091595255938]
+    royalty = [1429301895306022932,1429301761687945216]
+    role = interaction.user.top_role.id
 
-    data = {"prefix": "", "suffix": "", "scores": {}}
-    if symbol:
-        if position.lower() == "prefix":
-            data["prefix"] = symbol
-        elif position.lower() == "suffix":
-            data["suffix"] = symbol
+    userclass = "Basic/Civilian"
+    if role in enforcement:
+        userclass = "Enforcement"
+    if role in royalty:
+        userclass = "Royalty"
 
-    save_leaderboard(interaction.guild_id, name, data)
-    add_leaderboard_to_index(interaction.guild_id, name)
+    embed.add_field(name="Class", value=userclass)
 
-    await interaction.followup.send(f"✅ Created leaderboard **{name}**")
-
-# Set or update score
-@bot.tree.command(name="set_score", description="Set a member's score", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(lb_name="Leaderboard name", member="Member to update", score="Score value")
-async def set_score(interaction: discord.Interaction, lb_name: str, member: discord.Member, score: int):
-    await interaction.response.defer()
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.followup.send("⚠️ Admins only.", ephemeral=True)
-        return
-
-    data = load_leaderboard(interaction.guild_id, lb_name)
-    if not data:
-        await interaction.followup.send("⚠️ Leaderboard not found.", ephemeral=True)
-        return
-
-    # --- FIX STARTS HERE ---
-    if "scores" not in data or not isinstance(data.get("scores"), dict):
-        # Re-initialize the 'scores' key if it's missing or not a dictionary
-        data["scores"] = {}
-    # --- FIX ENDS HERE ---
-
-    data["scores"][str(member.id)] = score
-    save_leaderboard(interaction.guild_id, lb_name, data)
-    await interaction.followup.send(f"✅ Set {member.mention}'s score to {score} on **{lb_name}**")
-# View leaderboard
-@bot.tree.command(name="leaderboard", description="View a leaderboard", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(lb_name="Leaderboard name")
-async def leaderboard(interaction: discord.Interaction, lb_name: str):
-    await interaction.response.defer()
-    data = load_leaderboard(interaction.guild_id, lb_name)
-    print(data)
-    if not data:
-        await interaction.followup.send("⚠️ Leaderboard not found.", ephemeral=True)
-        return
-
-    embed = format_leaderboard(lb_name, data)
     await interaction.followup.send(embed=embed)
 
-# List leaderboards
-@bot.tree.command(name="list_lbs", description="List all leaderboards", guild=discord.Object(id=GUILD_ID))
-async def list_lbs(interaction: discord.Interaction):
+
+@bot.tree.command(name="exchange", description="Exchange someone bits", guild=discord.Object(id=GUILD_ID))
+@app_commands.guild_install
+@app_commands.check(datacheck)
+async def exchange(interaction: discord.Interaction, user: discord.Member, amount: int):
     await interaction.response.defer()
-    lbs = list_leaderboards(interaction.guild_id)
-    if not lbs:
-        await interaction.followup.send("⚠️ No leaderboards available.")
-        return
 
-    embed = discord.Embed(
-        title="📜 Available Leaderboards",
-        description="\n".join([f"• {lb}" for lb in lbs]),
-        color=discord.Color.blue()
-    )
-    await interaction.followup.send(embed=embed)
+    channel = interaction.guild.get_channel(1429334134416998450)
+    if amount > 200:
+        taxrate = 0.2
+        enforcement = [1429302329022349514, 1429302169517031445, 1429302091595255938]
+        role = user.top_role.id
 
-# Delete leaderboard
-@bot.tree.command(name="delete_lb", description="Delete a leaderboard", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(lb_name="Leaderboard name")
-async def delete_lb(interaction: discord.Interaction, lb_name: str):
-    await interaction.response.defer()
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.followup.send("⚠️ Admins only.", ephemeral=True)
-        return
+        if role in enforcement:
+            taxrate = 0.1
+    else:
+        taxrate = 0
 
-    data = load_leaderboard(interaction.guild_id, lb_name)
-    if not data:
-        await interaction.followup.send("⚠️ Leaderboard not found.", ephemeral=True)
-        return
+    if exchange_currency(interaction.user, user, amount, taxrate):
+        embed = discord.Embed(title=f"{interaction.user.name}'s Exchange", description="",color=discord.Color.green())
+        embed.set_author(name=f"{interaction.user.name}", icon_url=interaction.user.avatar.url)
+        embed.add_field(name="Process Result", value=f"Successfully exchanged {amount-round((amount*taxrate))} ({round(amount*taxrate)} taxed) bits to {user.name}")
 
-    delete_leaderboard(interaction.guild_id, lb_name)
-    remove_leaderboard_from_index(interaction.guild_id, lb_name)
-    await interaction.followup.send(f"✅ Deleted leaderboard **{lb_name}**")
+        await interaction.followup.send(embed=embed)
+        await channel.send(embed=embed)
+    else:
+        embed = discord.Embed(title=f"{interaction.user.name}'s Exchange", description="", color=discord.Color.red())
+        embed.set_author(name=f"{interaction.user.name}", icon_url=interaction.user.avatar.url)
+        embed.add_field(name="Process Result", value=f"Unable to exchange, funds insufficient.")
 
-# ---------------- Run ---------------- #
+        await interaction.followup.send(embed=embed)
+
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
